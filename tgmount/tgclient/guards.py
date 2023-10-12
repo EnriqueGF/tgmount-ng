@@ -177,7 +177,7 @@ class MessageWithFilename(
 
     @staticmethod
     def filename(message: "MessageWithFilename"):
-        return f"{message.id}_{message.file.name}"
+        return f"{message.file.name}.{message.id}"
 
 
 class MessageWithCompressedPhoto(
@@ -333,8 +333,8 @@ class MessageWithVideo(
 
     @staticmethod
     def filename(message: "MessageWithVideo"):
-        return f"{message.id}_video{message.file.ext}"
-
+        name_without_extension, ext = message.file.name.rsplit('.', 1)
+        return f"{name_without_extension}_{message.id}.{ext}"
 
 class MessageWithVideoFile(
     MessageDownloadable,
@@ -359,9 +359,10 @@ class MessageWithVideoFile(
     @staticmethod
     def filename(message: "MessageWithVideoFile"):
         if message.file.name is not None:
-            return f"{message.id}_{message.file.name}"
+            name_without_extension, ext = message.file.name.rsplit('.', 1)
+            return f"{name_without_extension}_{message.id}.{ext}"
         else:
-            return f"{message.id}_video{message.file.ext}"
+            return f"{message.file.ext}.{message.id}"
 
 
 class MessageWithVideoDocument(
