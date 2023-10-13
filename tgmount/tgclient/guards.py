@@ -360,6 +360,7 @@ class MessageWithVideoFile(
     def filename(message: "MessageWithVideoFile"):
         if message.file.name is not None:
             name_without_extension, ext = message.file.name.rsplit('.', 1)
+            print("Vídeo obtenido: " + f"{name_without_extension}_{message.id}.{ext}")
             return f"{name_without_extension}_{message.id}.{ext}"
         else:
             return f"{message.file.ext}.{message.id}"
