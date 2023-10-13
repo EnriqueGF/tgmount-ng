@@ -1,5 +1,7 @@
 import abc
+import json
 from typing import Any, ClassVar, Optional, Protocol, TypeGuard, TypeVar
+from telethon.utils import pack_bot_file_id, resolve_bot_file_id
 
 from .message_types import (
     DocumentProto,
@@ -357,11 +359,15 @@ class MessageWithVideoFile(
         )
 
     @staticmethod
-    def filename(message: "MessageWithVideoFile"):
+    def filename(message: "MessageWithVideoFile"):        
         if message.file.name is not None:
             name_without_extension, ext = message.file.name.rsplit('.', 1)
-            print("Vídeo obtenido: " + f"{name_without_extension}_{message.id}.{ext}")
-            return f"{name_without_extension}_{message.id}.{ext}"
+
+            packedID = pack_bot_file_id(message.media) # the one who telegram-uploader uses
+            
+            print("Vídeo obtenido: " + f"{name_without_extension}_{packedID}.{ext}")
+
+            return f"{name_without_extension}_{packedID}.{ext}"
         else:
             return f"{message.file.ext}.{message.id}"
 
