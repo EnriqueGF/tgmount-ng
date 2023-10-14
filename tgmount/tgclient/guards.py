@@ -363,7 +363,8 @@ class MessageWithVideoFile(
         if message.file.name is not None:
             name_without_extension, ext = message.file.name.rsplit('.', 1)
 
-            packedID = pack_bot_file_id(message.media) # the one who telegram-uploader uses
+            #packedID = pack_bot_file_id(message.media) # the one who telegram-uploader uses
+            packedID = message.media.document.id;
             
             print("Vídeo obtenido: " + f"{name_without_extension}_{packedID}.{ext}")
 
