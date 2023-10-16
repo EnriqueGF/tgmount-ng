@@ -77,7 +77,7 @@ class TelegramFilesSource:
             return await self.read(message, off, size)
         
         async def main_read_func(handle: Any, off: int, size: int) -> bytes:
-            print(f"handle={handle}, off={off}, size={size}")
+            #print(f"handle={handle}, off={off}, size={size}")
 
             quarter = size // 4
 
