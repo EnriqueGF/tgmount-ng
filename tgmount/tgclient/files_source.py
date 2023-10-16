@@ -73,25 +73,21 @@ class TelegramFilesSource:
         item = self.get_filesource_item(message)
 
         async def read_chunk(off: int, size: int) -> bytes:
-            #await asyncio.sleep(0.0000010)
+            await asyncio.sleep(0.00010) 
             return await self.read(message, off, size)
-        
+
         async def main_read_func(handle: Any, off: int, size: int) -> bytes:
-            #print(f"handle={handle}, off={off}, size={size}")
+            print(f"handle={handle}, off={off}, size={size}")
 
-            quarter = size // 4
+            chunk_size = size // 8
 
-            task1 = asyncio.create_task(read_chunk(off, quarter))
-            task2 = asyncio.create_task(read_chunk(off + quarter, quarter))
-            task3 = asyncio.create_task(read_chunk(off + 2 * quarter, quarter))
-            task4 = asyncio.create_task(read_chunk(off + 3 * quarter, quarter))
+            # Crear 8 tareas de lectura asincrónica
+            tasks = [asyncio.create_task(read_chunk(off + i * chunk_size, chunk_size)) for i in range(8)]
 
-            chunk1 = await task1
-            chunk2 = await task2
-            chunk3 = await task3
-            chunk4 = await task4
+            # Esperar a que todas las tareas se completen y recopilar los resultados
+            chunks = await asyncio.gather(*tasks)
 
-            return chunk1 + chunk2 + chunk3 + chunk4
+            return b''.join(chunks)
 
         fc = vfs.FileContent(size=item.size, read_func=main_read_func)
         return fc
