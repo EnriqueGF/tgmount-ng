@@ -1,6 +1,6 @@
 MB = 1048576
 KB = 1024
-BLOCK_SIZE = 128 * KB
+BLOCK_SIZE = 256 * KB
 
 
 def block(byte_idx: int, block_size=BLOCK_SIZE):
