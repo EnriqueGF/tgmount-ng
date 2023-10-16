@@ -73,7 +73,7 @@ class TelegramFilesSource:
         item = self.get_filesource_item(message)
 
         async def read_chunk(off: int, size: int) -> bytes:
-            await asyncio.sleep(0.00010) 
+            #await asyncio.sleep(0.00010) 
             return await self.read(message, off, size)
 
         async def main_read_func(handle: Any, off: int, size: int) -> bytes:
