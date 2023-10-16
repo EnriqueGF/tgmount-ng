@@ -18,6 +18,8 @@ from .types import (
     InputPhotoFileLocation,
 )
 from .logger import logger as module_logger
+from concurrent.futures import ThreadPoolExecutor
+import asyncio
 
 # logger = logging.getLogger("tgclient")
 
@@ -70,11 +72,28 @@ class TelegramFilesSource:
 
         item = self.get_filesource_item(message)
 
-        async def read_func(handle: Any, off: int, size: int) -> bytes:
+        async def read_chunk(off: int, size: int) -> bytes:
+            #await asyncio.sleep(0.0000010)
             return await self.read(message, off, size)
+        
+        async def main_read_func(handle: Any, off: int, size: int) -> bytes:
+            print(f"handle={handle}, off={off}, size={size}")
 
-        fc = vfs.FileContent(size=item.size, read_func=read_func)
+            quarter = size // 4
 
+            task1 = asyncio.create_task(read_chunk(off, quarter))
+            task2 = asyncio.create_task(read_chunk(off + quarter, quarter))
+            task3 = asyncio.create_task(read_chunk(off + 2 * quarter, quarter))
+            task4 = asyncio.create_task(read_chunk(off + 3 * quarter, quarter))
+
+            chunk1 = await task1
+            chunk2 = await task2
+            chunk3 = await task3
+            chunk4 = await task4
+
+            return chunk1 + chunk2 + chunk3 + chunk4
+
+        fc = vfs.FileContent(size=item.size, read_func=main_read_func)
         return fc
 
     async def read(
