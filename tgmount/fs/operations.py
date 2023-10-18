@@ -111,11 +111,12 @@ class MemoryBuffer:
     def __init__(self):
         self.bufferArray = {}
         self.writtenRanges = {}
-        self.isBuffering = False;
+        self.isBufferingList = {};
     
     def storeFile(self, handle, bytes):
         self.bufferArray[handle] = mmap.mmap(-1, bytes, access=mmap.ACCESS_WRITE)
         self.writtenRanges[handle] = set()
+        self.isBufferingList[handle] = False
         
     async def memoryRead(self, handle, off, size):
         if handle not in self.bufferArray:
@@ -123,8 +124,8 @@ class MemoryBuffer:
             return None
 
         while not self.hasBeenWritten(handle, off, size):
-            print(f"Waiting for data to be available. handle={handle}, off={off}, size={size}")
-            print(f"Written ranges: {self.writtenRanges[handle]}")
+            #print(f"Waiting for data to be available. handle={handle}, off={off}, size={size}")
+            #print(f"Written ranges: {self.writtenRanges[handle]}")
             await asyncio.sleep(0.1)
 
         self.bufferArray[handle].seek(off)
@@ -172,7 +173,7 @@ class MemoryBuffer:
             return
         
         print(f"(operations.py) bufferNextBytes(handle={handle},offset={offset})")
-        self.isBuffering = True
+        self.isBufferingList[handle] = True
         
         chunk_size = 1500000  # 1.5MB
         buffer_size = 30 * 1024 * 1024  # 30MB BUFFER
@@ -204,7 +205,7 @@ class MemoryBuffer:
             tasks.append(task)
 
         await asyncio.gather(*tasks)
-        self.isBuffering = False
+        self.isBufferingList[handle] = False
         print("Buffer filled.")
 
 
@@ -618,7 +619,7 @@ class FileSystemOperations(pyfuse3.Operations, FileSystemOperationsMixin):
             self.logger.error(f"read(fh={fh}): is not file.")
             raise pyfuse3.FUSEError(errno.EIO)
 
-        if self.memory_buffer.isBuffering == False:
+        if self.memory_buffer.isBufferingList[fh] == False:
             asyncio.create_task(self.memory_buffer.bufferNextBytes(fh, off, item.data.structure_item.content.read_func, item.data.structure_item.content.size))
         
         chunk = await self.memory_buffer.memoryRead(fh, off, size)
