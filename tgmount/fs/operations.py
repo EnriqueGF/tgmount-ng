@@ -126,7 +126,7 @@ class MemoryBuffer:
 
         while not self.hasBeenWritten(handle, off, size):
             print(f"Waiting for data to be available. handle={handle}, off={off}, size={size}")
-            #print(f"Written ranges: {self.writtenRanges[handle]}")
+            print(f"Written ranges: {self.writtenRanges[handle]}")
             await asyncio.sleep(0.1)
 
         self.bufferArray[handle].seek(off)
