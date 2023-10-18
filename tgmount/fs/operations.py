@@ -219,7 +219,7 @@ class MemoryBuffer:
         if not is_covered:
             # Crear una nueva tarea de almacenamiento en búfer
             
-            BUFFER_MB = 300
+            BUFFER_MB = 50
             num_tasks = 1
             chunk_size = 1500000
 
