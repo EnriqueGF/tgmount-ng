@@ -111,7 +111,8 @@ class MemoryBuffer:
     def __init__(self):
         self.bufferArray = {}
         self.writtenRanges = {}
-        self.isBufferingList = {};
+        self.isBufferingList = {}
+        self.bufferingTasks = {}
     
     def storeFile(self, handle, bytes):
         self.bufferArray[handle] = mmap.mmap(-1, bytes, access=mmap.ACCESS_WRITE)
@@ -125,7 +126,7 @@ class MemoryBuffer:
 
         while not self.hasBeenWritten(handle, off, size):
             print(f"Waiting for data to be available. handle={handle}, off={off}, size={size}")
-            print(f"Written ranges: {self.writtenRanges[handle]}")
+            #print(f"Written ranges: {self.writtenRanges[handle]}")
             await asyncio.sleep(0.1)
 
         self.bufferArray[handle].seek(off)
@@ -171,10 +172,26 @@ class MemoryBuffer:
         if handle not in self.bufferArray:
             print("Error: handle not found")
             return
-        
+
+        # Nueva lógica para manejar múltiples tareas de almacenamiento en búfer
+        if handle not in self.bufferingTasks:
+            self.bufferingTasks[handle] = []
+
+        # Verificar si ya hay una tarea que cubra este rango
+        for task in self.bufferingTasks[handle]:
+            if task['start_offset'] <= offset and task['end_offset'] >= offset:
+                print(f"Ya hay una tarea de almacenamiento en búfer que cubre este rango: {task}")
+                return
+
+        # Crear una nueva tarea de almacenamiento en búfer
+        new_task = {
+            'start_offset': offset,
+            'end_offset': min(offset + 30 * 1024 * 1024, total_size)  # 30MB o hasta el final del archivo
+        }
+        self.bufferingTasks[handle].append(new_task)
+
         print(f"(operations.py) bufferNextBytes(handle={handle},offset={offset})")
-        self.isBufferingList[handle] = True
-        
+
         chunk_size = 1500000  # 1.5MB
         buffer_size = 30 * 1024 * 1024  # 30MB BUFFER
         num_tasks = 2
@@ -205,7 +222,10 @@ class MemoryBuffer:
             tasks.append(task)
 
         await asyncio.gather(*tasks)
-        self.isBufferingList[handle] = False
+
+        # Al final, eliminar esta tarea de la lista
+        self.bufferingTasks[handle].remove(new_task)
+
         print("Buffer filled.")
 
 
@@ -619,10 +639,8 @@ class FileSystemOperations(pyfuse3.Operations, FileSystemOperationsMixin):
             self.logger.error(f"read(fh={fh}): is not file.")
             raise pyfuse3.FUSEError(errno.EIO)
 
-        if self.memory_buffer.isBufferingList[fh] == False:
-            print(f"(operations.py) Creating buffer task. handle={fh}, off={off}, size={size}")
-            asyncio.create_task(self.memory_buffer.bufferNextBytes(fh, off, item.data.structure_item.content.read_func, item.data.structure_item.content.size))
-        
+        asyncio.create_task(self.memory_buffer.bufferNextBytes(fh, off, item.data.structure_item.content.read_func, item.data.structure_item.content.size))
+
         chunk = await self.memory_buffer.memoryRead(fh, off, size)
         #chunk = await item.data.structure_item.content.read_func(fh, off, size)
 
