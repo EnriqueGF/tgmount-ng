@@ -129,7 +129,7 @@ class MemoryBuffer:
             await asyncio.sleep(0.1)
 
         self.bufferArray[handle].seek(off)
-        #print(f"Reading from buffer: handle={handle}, off={off}, size={size}")
+        print(f"Reading from buffer: handle={handle}, off={off}, size={size}")
         return self.bufferArray[handle].read(size)
     
     def memoryWrite(self, handle, off, size, data):
@@ -620,6 +620,7 @@ class FileSystemOperations(pyfuse3.Operations, FileSystemOperationsMixin):
             raise pyfuse3.FUSEError(errno.EIO)
 
         if self.memory_buffer.isBufferingList[fh] == False:
+            print(f"(operations.py) Creating buffer task. handle={fh}, off={off}, size={size}")
             asyncio.create_task(self.memory_buffer.bufferNextBytes(fh, off, item.data.structure_item.content.read_func, item.data.structure_item.content.size))
         
         chunk = await self.memory_buffer.memoryRead(fh, off, size)
