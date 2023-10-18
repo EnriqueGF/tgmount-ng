@@ -17,6 +17,10 @@ from .util import (
     flags_to_str,
 )
 
+import mmap
+import time
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 
 """ 
 TODO
@@ -103,7 +107,82 @@ class FileSystemOperationsMixin:
 
 from .logger import logger
 
+class MemoryBuffer:
+    def __init__(self):
+        self.bufferArray = {}
+        self.writtenRanges = {}
+    
+    def storeFile(self, handle, bytes):
+        self.bufferArray[handle] = mmap.mmap(-1, bytes, access=mmap.ACCESS_WRITE)
+        self.writtenRanges[handle] = set()
+        
+    async def memoryRead(self, handle, off, size):
+        if handle not in self.bufferArray:
+            print("Error: handle not found")
+            return None
 
+        while not self.hasBeenWritten(handle, off, size):
+            await asyncio.sleep(0.1)
+
+        self.bufferArray[handle].seek(off)
+        print(f"Reading from buffer: handle={handle}, off={off}, size={size}")
+        return self.bufferArray[handle].read(size)
+    
+    def memoryWrite(self, handle, off, size, data):
+        if handle not in self.bufferArray:
+            print("Error: handle not found")
+            return
+        if len(data) != size:
+            print("Error: size of data does not match the specified size")
+            return
+        self.bufferArray[handle][off:off + size] = data
+        self.markAsWritten(handle, off, size)
+
+    def markAsWritten(self, handle, off, size):
+        self.writtenRanges[handle].add((off, off + size))
+
+    def hasBeenWritten(self, handle, off, size):
+        if handle not in self.writtenRanges:
+            return False
+        for start, end in self.writtenRanges[handle]:
+            if start <= off and end >= off + size:
+                return True
+        return False
+    async def bufferNextBytes(self, handle, offset, readFunc):
+        if handle not in self.bufferArray:
+            print("Error: handle not found")
+            return
+        
+        print(f"(operations.py) bufferNextBytes(handle={handle},offset={offset})")
+
+        chunk_size = 1000000
+        total_size = 10 * 1024 * 1024  # 10MB BUFFER
+        num_tasks = 3 
+
+        async def worker(task_id, start_offset, end_offset):
+            current_offset = start_offset
+            while current_offset < end_offset:
+                next_chunk_size = min(chunk_size, end_offset - current_offset)
+                print(f"(operations.py) readFromBufferToTG(handle={handle},off={current_offset},size={next_chunk_size}, task_id={task_id})")
+                data = await readFunc(handle, current_offset, next_chunk_size)
+
+                self.memoryWrite(handle, current_offset, next_chunk_size, data)
+                current_offset += next_chunk_size
+
+        tasks = []
+        bytes_per_task = total_size // num_tasks
+        for i in range(num_tasks):
+            start_offset = offset + i * bytes_per_task
+            end_offset = start_offset + bytes_per_task
+            print(f"worker = {i}, start_offset = {start_offset}, end_offset = {end_offset}")
+            task = asyncio.create_task(worker(i, start_offset, end_offset))
+            tasks.append(task)
+
+        await asyncio.gather(*tasks)
+
+        print("Buffer filled with 10 MB.")
+
+        
 class FileSystemOperations(pyfuse3.Operations, FileSystemOperationsMixin):
     FsRegistryItem = RegistryItem[FileSystemItem] | RegistryRoot[FileSystemItem]
     logger = logger.getChild(f"FileSystemOperations")
@@ -119,7 +198,10 @@ class FileSystemOperations(pyfuse3.Operations, FileSystemOperationsMixin):
         self._update_lock = MyLock(
             "FileSystemOperations.update_lock", logger=self.logger
         )
-
+        
+        self.memory_buffer = MemoryBuffer()
+        self.doneBuf = False
+        
         self._init()
 
     def _init(self):
@@ -461,7 +543,7 @@ class FileSystemOperations(pyfuse3.Operations, FileSystemOperationsMixin):
         handle = None
 
         item = self._inodes.get_item_by_inode(inode)
-
+        
         if item is None:
             self.logger.error(f"open({inode}) missing inode")
             raise pyfuse3.FUSEError(errno.ENOENT)
@@ -480,12 +562,18 @@ class FileSystemOperations(pyfuse3.Operations, FileSystemOperationsMixin):
             raise pyfuse3.FUSEError(errno.EPERM)
 
         handle = await item.data.structure_item.content.open_func()
-
+        
         fh = self._handles.open_fh(item, handle)
 
         self.logger.debug(
             f"- done open({inode}): fh={fh}, name={item.data.structure_item.name}"
         )
+        
+        print(f"(operations.py) Storing at buffer: fh={fh}, size={item.data.structure_item.content.size}...")
+        self.memory_buffer.storeFile(fh, item.data.structure_item.content.size)
+        print(f"(operations.py) Stored at buffer: fh={fh}, size={item.data.structure_item.content.size}")
+        
+        print(f"(operations.py) open(inode={inode},flags={flags},fh={fh})")
 
         return pyfuse3.FileInfo(fh=fh)
 
@@ -493,7 +581,7 @@ class FileSystemOperations(pyfuse3.Operations, FileSystemOperationsMixin):
     @exception_handler
     async def read(self, fh, off, size):
         self.logger.debug(f"= read(fh={fh},off={off},size={size}).")
-        print(f"= read(fh={fh},off={off},size={size}).")
+        print(f"(operations.py) read(handle={fh},off={off},size={size})")
 
         item, handle = self._handles.get_by_fh(fh)
 
@@ -505,7 +593,13 @@ class FileSystemOperations(pyfuse3.Operations, FileSystemOperationsMixin):
             self.logger.error(f"read(fh={fh}): is not file.")
             raise pyfuse3.FUSEError(errno.EIO)
 
-        chunk = await item.data.structure_item.content.read_func(handle, off, size)
+        
+        if self.doneBuf == False:
+            await self.memory_buffer.bufferNextBytes(fh, off, item.data.structure_item.content.read_func)
+            self.doneBuf = True
+        
+        chunk = await self.memory_buffer.memoryRead(fh, off, size)
+        #chunk = await item.data.structure_item.content.read_func(fh, off, size)
 
         self.logger.debug(
             f"- read(fh={fh},off={off},size={size}) returns { len(chunk)} bytes"
