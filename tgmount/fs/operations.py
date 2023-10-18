@@ -136,15 +136,16 @@ class MemoryBuffer:
         if off + size > totalFilesize:
             return b''
             
-        while not self.hasBeenWritten(handle, off, size) and self.memoryReadAttempts[handle] < 100:
+        attempts = 0;
+            
+        while not self.hasBeenWritten(handle, off, size) and attempts < 100:
             #print(f"Waiting for data to be available. handle={handle}, off={off}, size={size}")
             #print(f"Written ranges: {self.writtenRanges[handle]}")
-            self.memoryReadAttempts[handle] += 1
+            attempts += 1
+            print(f"SUMADO ATTEMPT, attempts {attempts} llamado desde {off} en handle {handle}")
             await asyncio.sleep(0.03)
 
-        self.memoryReadAttempts[handle] = 0
-
-        if self.memoryReadAttempts[handle] >= 50:
+        if attempts >= 50:
             print(f"(ATTEMPS-LIMITs) Reading directly: memoryReadAttempts >= 50. handle={handle}, off={off}, size={size}")
             return await item.data.structure_item.content.read_func(handle, off, size);
 
