@@ -111,6 +111,7 @@ class MemoryBuffer:
     def __init__(self):
         self.bufferArray = {}
         self.writtenRanges = {}
+        self.isBuffering = False;
     
     def storeFile(self, handle, bytes):
         self.bufferArray[handle] = mmap.mmap(-1, bytes, access=mmap.ACCESS_WRITE)
@@ -122,10 +123,11 @@ class MemoryBuffer:
             return None
 
         while not self.hasBeenWritten(handle, off, size):
+            #print(f"Waiting for data to be available. handle={handle}, off={off}, size={size}")
             await asyncio.sleep(0.1)
 
         self.bufferArray[handle].seek(off)
-        print(f"Reading from buffer: handle={handle}, off={off}, size={size}")
+        #print(f"Reading from buffer: handle={handle}, off={off}, size={size}")
         return self.bufferArray[handle].read(size)
     
     def memoryWrite(self, handle, off, size, data):
@@ -134,6 +136,7 @@ class MemoryBuffer:
             return
         if len(data) != size:
             print("Error: size of data does not match the specified size")
+            print(f"len(data) = {len(data)}, size = {size}")
             return
         self.bufferArray[handle][off:off + size] = data
         self.markAsWritten(handle, off, size)
@@ -144,43 +147,65 @@ class MemoryBuffer:
     def hasBeenWritten(self, handle, off, size):
         if handle not in self.writtenRanges:
             return False
-        for start, end in self.writtenRanges[handle]:
-            if start <= off and end >= off + size:
+        
+        target_start = off
+        target_end = off + size
+        
+        sorted_ranges = sorted(self.writtenRanges[handle])
+        
+        for start, end in sorted_ranges:
+            if start <= target_start and end >= target_start:
+                target_start = end
+            
+            if target_start >= target_end:
                 return True
+            
+            if start > target_end:
+                break
+        
         return False
-    async def bufferNextBytes(self, handle, offset, readFunc):
+    
+    async def bufferNextBytes(self, handle, offset, readFunc, total_size):
         if handle not in self.bufferArray:
             print("Error: handle not found")
             return
         
         print(f"(operations.py) bufferNextBytes(handle={handle},offset={offset})")
+        self.isBuffering = True
+        
+        chunk_size = 1500000  # 1.5MB
+        buffer_size = 30 * 1024 * 1024  # 30MB BUFFER
+        num_tasks = 2
 
-        chunk_size = 1000000
-        total_size = 10 * 1024 * 1024  # 10MB BUFFER
-        num_tasks = 3 
+        buffer_size = min(buffer_size, total_size - offset)
 
         async def worker(task_id, start_offset, end_offset):
             current_offset = start_offset
             while current_offset < end_offset:
-                next_chunk_size = min(chunk_size, end_offset - current_offset)
-                print(f"(operations.py) readFromBufferToTG(handle={handle},off={current_offset},size={next_chunk_size}, task_id={task_id})")
+                next_chunk_size = min(chunk_size, end_offset - current_offset, total_size - current_offset)
+                
+                print(f"(operations.py) telegramReqStoreInBuffer(handle={handle},off={current_offset},size={next_chunk_size}, task_id={task_id})")
                 data = await readFunc(handle, current_offset, next_chunk_size)
 
                 self.memoryWrite(handle, current_offset, next_chunk_size, data)
                 current_offset += next_chunk_size
 
         tasks = []
-        bytes_per_task = total_size // num_tasks
+        bytes_per_task = buffer_size // num_tasks
         for i in range(num_tasks):
             start_offset = offset + i * bytes_per_task
             end_offset = start_offset + bytes_per_task
+            # Asegurarse de que el rango de trabajo no exceda el tamaño total del archivo
+            end_offset = min(end_offset, total_size)
+            
             print(f"worker = {i}, start_offset = {start_offset}, end_offset = {end_offset}")
             task = asyncio.create_task(worker(i, start_offset, end_offset))
             tasks.append(task)
 
         await asyncio.gather(*tasks)
+        self.isBuffering = False
+        print("Buffer filled.")
 
-        print("Buffer filled with 10 MB.")
 
         
 class FileSystemOperations(pyfuse3.Operations, FileSystemOperationsMixin):
@@ -200,7 +225,6 @@ class FileSystemOperations(pyfuse3.Operations, FileSystemOperationsMixin):
         )
         
         self.memory_buffer = MemoryBuffer()
-        self.doneBuf = False
         
         self._init()
 
@@ -593,10 +617,8 @@ class FileSystemOperations(pyfuse3.Operations, FileSystemOperationsMixin):
             self.logger.error(f"read(fh={fh}): is not file.")
             raise pyfuse3.FUSEError(errno.EIO)
 
-        
-        if self.doneBuf == False:
-            await self.memory_buffer.bufferNextBytes(fh, off, item.data.structure_item.content.read_func)
-            self.doneBuf = True
+        if self.memory_buffer.isBuffering == False:
+            asyncio.create_task(self.memory_buffer.bufferNextBytes(fh, off, item.data.structure_item.content.read_func, item.data.structure_item.content.size))
         
         chunk = await self.memory_buffer.memoryRead(fh, off, size)
         #chunk = await item.data.structure_item.content.read_func(fh, off, size)
