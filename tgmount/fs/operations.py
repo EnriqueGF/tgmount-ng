@@ -119,10 +119,20 @@ class MemoryBuffer:
         self.writtenRanges[handle] = set()
         self.isBufferingList[handle] = False
         
-    async def memoryRead(self, handle, off, size):
+    async def memoryRead(self, handle, off, size, totalFilesize):
         if handle not in self.bufferArray:
             print("Error: handle not found")
             return None
+
+        ## OPERACIONES EN EL CASO DE QUE SE SOLICITE UN OFFSET MAYOR AL TAMAÑO DEL ARCHIVO
+        if off >= totalFilesize:
+            print("ENTRO1")
+            return b''
+
+        if off + size > totalFilesize:
+            return b''
+            
+            ###
 
         while not self.hasBeenWritten(handle, off, size):
             print(f"Waiting for data to be available. handle={handle}, off={off}, size={size}")
@@ -132,7 +142,7 @@ class MemoryBuffer:
         self.bufferArray[handle].seek(off)
         print(f"Reading from buffer: handle={handle}, off={off}, size={size}")
         return self.bufferArray[handle].read(size)
-    
+
     def memoryWrite(self, handle, off, size, data):
         if handle not in self.bufferArray:
             print("Error: handle not found")
@@ -168,7 +178,7 @@ class MemoryBuffer:
         
         return False
     
-    async def bufferNextBytes(self, handle, offset, readFunc, total_size):
+    async def bufferNextBytes(self, handle, offset, readFunc, total_size, readSize):
         if handle not in self.bufferArray:
             print("Error: handle not found")
             return
@@ -177,56 +187,71 @@ class MemoryBuffer:
         if handle not in self.bufferingTasks:
             self.bufferingTasks[handle] = []
 
-        # Verificar si ya hay una tarea que cubra este rango
-        for task in self.bufferingTasks[handle]:
-            if task['start_offset'] <= offset and task['end_offset'] >= offset:
-                print(f"Ya hay una tarea de almacenamiento en búfer que cubre este rango: {task}")
-                return
+        # Verificar si ya hay una o más tareas que cubran este rango completo
+        target_start = offset
+        target_end = offset + readSize  # Ahora usamos readSize para determinar el final del rango
 
-        # Crear una nueva tarea de almacenamiento en búfer
-        new_task = {
-            'start_offset': offset,
-            'end_offset': min(offset + 30 * 1024 * 1024, total_size)  # 30MB o hasta el final del archivo
-        }
-        self.bufferingTasks[handle].append(new_task)
+        is_covered = False
 
-        print(f"(operations.py) bufferNextBytes(handle={handle},offset={offset})")
+        # Ordenar las tareas por 'start_offset' para facilitar la verificación
+        sorted_tasks = sorted(self.bufferingTasks[handle], key=lambda x: x['start_offset'])
 
-        chunk_size = 1500000  # 1.5MB
-        buffer_size = 30 * 1024 * 1024  # 30MB BUFFER
-        num_tasks = 2
+        # Verificar si el rango objetivo está completamente cubierto por una o más tareas
+        for task in sorted_tasks:
+            if task['start_offset'] <= target_start and task['end_offset'] >= target_start:
+                target_start = task['end_offset']
 
-        buffer_size = min(buffer_size, total_size - offset)
+            if target_start >= target_end:
+                is_covered = True
+                print(f"El rango objetivo está completamente cubierto por tareas existentes.")
+                break
 
-        async def worker(task_id, start_offset, end_offset):
-            current_offset = start_offset
-            while current_offset < end_offset:
-                next_chunk_size = min(chunk_size, end_offset - current_offset, total_size - current_offset)
+        if not is_covered:
+            # Crear una nueva tarea de almacenamiento en búfer
+            new_task = {
+                'start_offset': offset,
+                'end_offset': min(offset + 30 * 1024 * 1024, total_size)  # 30MB o hasta el final del archivo
+            }
+            print(f"Creando una nueva tarea de almacenamiento en búfer. start_offset={new_task['start_offset']}, end_offset={new_task['end_offset']}")
+            self.bufferingTasks[handle].append(new_task)
+
+            print(f"(operations.py) bufferNextBytes(handle={handle},offset={offset})")
+
+            chunk_size = 1500000  # 1.5MB
+            buffer_size = 30 * 1024 * 1024  # 30MB BUFFER
+            num_tasks = 2
+
+            buffer_size = min(buffer_size, total_size - offset)
+
+            async def worker(task_id, start_offset, end_offset):
+                current_offset = start_offset
+                while current_offset < end_offset:
+                    next_chunk_size = min(chunk_size, end_offset - current_offset, total_size - current_offset)
+                    
+                    print(f"(operations.py) telegramReqStoreInBuffer(handle={handle},off={current_offset},size={next_chunk_size}, task_id={task_id})")
+                    data = await readFunc(handle, current_offset, next_chunk_size)
+
+                    self.memoryWrite(handle, current_offset, next_chunk_size, data)
+                    current_offset += next_chunk_size
+
+            tasks = []
+            bytes_per_task = buffer_size // num_tasks
+            for i in range(num_tasks):
+                start_offset = offset + i * bytes_per_task
+                end_offset = start_offset + bytes_per_task
+                # Asegurarse de que el rango de trabajo no exceda el tamaño total del archivo
+                end_offset = min(end_offset, total_size)
                 
-                print(f"(operations.py) telegramReqStoreInBuffer(handle={handle},off={current_offset},size={next_chunk_size}, task_id={task_id})")
-                data = await readFunc(handle, current_offset, next_chunk_size)
+                print(f"worker = {i}, start_offset = {start_offset}, end_offset = {end_offset}")
+                task = asyncio.create_task(worker(i, start_offset, end_offset))
+                tasks.append(task)
 
-                self.memoryWrite(handle, current_offset, next_chunk_size, data)
-                current_offset += next_chunk_size
+            await asyncio.gather(*tasks)
 
-        tasks = []
-        bytes_per_task = buffer_size // num_tasks
-        for i in range(num_tasks):
-            start_offset = offset + i * bytes_per_task
-            end_offset = start_offset + bytes_per_task
-            # Asegurarse de que el rango de trabajo no exceda el tamaño total del archivo
-            end_offset = min(end_offset, total_size)
-            
-            print(f"worker = {i}, start_offset = {start_offset}, end_offset = {end_offset}")
-            task = asyncio.create_task(worker(i, start_offset, end_offset))
-            tasks.append(task)
+            # Al final, eliminar esta tarea de la lista
+            self.bufferingTasks[handle].remove(new_task)
 
-        await asyncio.gather(*tasks)
-
-        # Al final, eliminar esta tarea de la lista
-        self.bufferingTasks[handle].remove(new_task)
-
-        print("Buffer filled.")
+            print("Buffer filled.")
 
 
         
@@ -637,11 +662,11 @@ class FileSystemOperations(pyfuse3.Operations, FileSystemOperationsMixin):
 
         if not vfs.FileLike.guard(item.data.structure_item):
             self.logger.error(f"read(fh={fh}): is not file.")
-            raise pyfuse3.FUSEError(errno.EIO)
+            raise pyfuse3.FUSEError(errno.EIO)        
 
-        asyncio.create_task(self.memory_buffer.bufferNextBytes(fh, off, item.data.structure_item.content.read_func, item.data.structure_item.content.size))
+        asyncio.create_task(self.memory_buffer.bufferNextBytes(fh, off, item.data.structure_item.content.read_func, item.data.structure_item.content.size, size))
 
-        chunk = await self.memory_buffer.memoryRead(fh, off, size)
+        chunk = await self.memory_buffer.memoryRead(fh, off, size, item.data.structure_item.content.size)
         #chunk = await item.data.structure_item.content.read_func(fh, off, size)
 
         self.logger.debug(
