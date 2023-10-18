@@ -113,43 +113,53 @@ class MemoryBuffer:
         self.writtenRanges = {}
         self.isBufferingList = {}
         self.bufferingTasks = {}
+        self.memoryReadAttempts = {}
     
     def storeFile(self, handle, bytes):
         self.bufferArray[handle] = mmap.mmap(-1, bytes, access=mmap.ACCESS_WRITE)
         self.writtenRanges[handle] = set()
         self.isBufferingList[handle] = False
+        self.memoryReadAttempts[handle] = 0
         
-    async def memoryRead(self, handle, off, size, totalFilesize):
+    async def memoryRead(self, handle, off, size, item):
         if handle not in self.bufferArray:
-            print("Error: handle not found")
+            print("(Buffer) Error: handle not found")
             return None
+        
+        totalFilesize = item.data.structure_item.content.size;
 
         ## OPERACIONES EN EL CASO DE QUE SE SOLICITE UN OFFSET MAYOR AL TAMAÑO DEL ARCHIVO
         if off >= totalFilesize:
-            print("ENTRO1")
+            print("(Buffer) ENTRO1 OPERACIONES EN EL CASO DE QUE SE SOLICITE UN OFFSET MAYOR AL TAMAÑO DEL ARCHIVO")
             return b''
 
         if off + size > totalFilesize:
             return b''
             
-            ###
+        while not self.hasBeenWritten(handle, off, size) and self.memoryReadAttempts[handle] < 100:
+            #print(f"Waiting for data to be available. handle={handle}, off={off}, size={size}")
+            #print(f"Written ranges: {self.writtenRanges[handle]}")
+            self.memoryReadAttempts[handle] += 1
+            await asyncio.sleep(0.03)
 
-        while not self.hasBeenWritten(handle, off, size):
-            print(f"Waiting for data to be available. handle={handle}, off={off}, size={size}")
-            print(f"Written ranges: {self.writtenRanges[handle]}")
-            await asyncio.sleep(0.1)
+        self.memoryReadAttempts[handle] = 0
+
+        if self.memoryReadAttempts[handle] >= 50:
+            print(f"(ATTEMPS-LIMITs) Reading directly: memoryReadAttempts >= 50. handle={handle}, off={off}, size={size}")
+            return await item.data.structure_item.content.read_func(handle, off, size);
 
         self.bufferArray[handle].seek(off)
-        print(f"Reading from buffer: handle={handle}, off={off}, size={size}")
+        
+        #print(f"(Buffer) Reading from buffer: handle={handle}, off={off}, size={size}")
         return self.bufferArray[handle].read(size)
 
     def memoryWrite(self, handle, off, size, data):
         if handle not in self.bufferArray:
-            print("Error: handle not found")
+            print("(Buffer) Error: handle not found")
             return
         if len(data) != size:
-            print("Error: size of data does not match the specified size")
-            print(f"len(data) = {len(data)}, size = {size}")
+            print("(Buffer)  Error: size of data does not match the specified size")
+            print(f"(Buffer) len(data) = {len(data)}, size = {size}")
             return
         self.bufferArray[handle][off:off + size] = data
         self.markAsWritten(handle, off, size)
@@ -180,7 +190,7 @@ class MemoryBuffer:
     
     async def bufferNextBytes(self, handle, offset, readFunc, total_size, readSize):
         if handle not in self.bufferArray:
-            print("Error: handle not found")
+            print("(Buffer) Error: handle not found")
             return
 
         # Nueva lógica para manejar múltiples tareas de almacenamiento en búfer
@@ -203,35 +213,35 @@ class MemoryBuffer:
 
             if target_start >= target_end:
                 is_covered = True
-                print(f"El rango objetivo está completamente cubierto por tareas existentes.")
+                #print(f"(Buffer) El rango de bytes comprobado para buffear ya está cubierto: targetStart={target_start}, targetEnd={target_end}")
                 break
 
         if not is_covered:
             # Crear una nueva tarea de almacenamiento en búfer
+            
+            BUFFER_MB = 300
+            num_tasks = 1
+            chunk_size = 1500000
+
             new_task = {
                 'start_offset': offset,
-                'end_offset': min(offset + 30 * 1024 * 1024, total_size)  # 30MB o hasta el final del archivo
+                'end_offset': min(offset + BUFFER_MB * 1024 * 1024, total_size)  # 30MB o hasta el final del archivo
             }
-            print(f"Creando una nueva tarea de almacenamiento en búfer. start_offset={new_task['start_offset']}, end_offset={new_task['end_offset']}")
+            print(f"(Buffer) Creando una nueva tarea de almacenamiento en búfer. Handle={handle} start_offset={new_task['start_offset']}, end_offset={new_task['end_offset']}")
             self.bufferingTasks[handle].append(new_task)
 
-            print(f"(operations.py) bufferNextBytes(handle={handle},offset={offset})")
-
-            chunk_size = 1500000  # 1.5MB
-            buffer_size = 30 * 1024 * 1024  # 30MB BUFFER
-            num_tasks = 2
-
-            buffer_size = min(buffer_size, total_size - offset)
+            buffer_size = BUFFER_MB * 1024 * 1024
+            buffer_size = min(buffer_size, total_size - offset) # Prevent buffer overflow
 
             async def worker(task_id, start_offset, end_offset):
                 current_offset = start_offset
                 while current_offset < end_offset:
                     next_chunk_size = min(chunk_size, end_offset - current_offset, total_size - current_offset)
                     
-                    print(f"(operations.py) telegramReqStoreInBuffer(handle={handle},off={current_offset},size={next_chunk_size}, task_id={task_id})")
                     data = await readFunc(handle, current_offset, next_chunk_size)
 
                     self.memoryWrite(handle, current_offset, next_chunk_size, data)
+                    print(f"(Buffer) Writed (handle={handle},off={current_offset},size={next_chunk_size}, task_id={task_id})")
                     current_offset += next_chunk_size
 
             tasks = []
@@ -651,8 +661,7 @@ class FileSystemOperations(pyfuse3.Operations, FileSystemOperationsMixin):
     @measure_time(logger_func=logger.debug)
     @exception_handler
     async def read(self, fh, off, size):
-        self.logger.debug(f"= read(fh={fh},off={off},size={size}).")
-        print(f"(operations.py) read(handle={fh},off={off},size={size})")
+        #self.logger.debug(f"= read(fh={fh},off={off},size={size}).")
 
         item, handle = self._handles.get_by_fh(fh)
 
@@ -666,12 +675,12 @@ class FileSystemOperations(pyfuse3.Operations, FileSystemOperationsMixin):
 
         asyncio.create_task(self.memory_buffer.bufferNextBytes(fh, off, item.data.structure_item.content.read_func, item.data.structure_item.content.size, size))
 
-        chunk = await self.memory_buffer.memoryRead(fh, off, size, item.data.structure_item.content.size)
-        #chunk = await item.data.structure_item.content.read_func(fh, off, size)
+        chunk = await self.memory_buffer.memoryRead(fh, off, size, item)
+        print('\033[92m' + f"(operations.py) read(handle={fh},off={off},size={size})" + '\033[0m')
+        
+        # output empty chunk
+        #chunk = b''
 
-        self.logger.debug(
-            f"- read(fh={fh},off={off},size={size}) returns { len(chunk)} bytes"
-        )
         return chunk
 
     @exception_handler
