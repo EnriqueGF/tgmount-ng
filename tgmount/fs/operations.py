@@ -20,6 +20,7 @@ from .util import (
 import mmap
 import time
 import asyncio
+import threading
 from concurrent.futures import ThreadPoolExecutor
 
 """ 
@@ -192,8 +193,7 @@ class MemoryBuffer:
         if handle not in self.bufferArray:
             print("(Buffer) Error: handle not found")
             return
-
-        # Nueva lógica para manejar múltiples tareas de almacenamiento en búfer
+        
         if handle not in self.bufferingTasks:
             self.bufferingTasks[handle] = []
 
@@ -213,50 +213,31 @@ class MemoryBuffer:
 
             if target_start >= target_end:
                 is_covered = True
-                #print(f"(Buffer) El rango de bytes comprobado para buffear ya está cubierto: targetStart={target_start}, targetEnd={target_end}")
                 break
 
         if not is_covered:
             # Crear una nueva tarea de almacenamiento en búfer
-            
             BUFFER_MB = 50
-            num_tasks = 1
             chunk_size = 1500000
 
             new_task = {
                 'start_offset': offset,
-                'end_offset': min(offset + BUFFER_MB * 1024 * 1024, total_size)  # 30MB o hasta el final del archivo
+                'end_offset': min(offset + BUFFER_MB * 1024 * 1024, total_size)  # 50MB o hasta el final del archivo
             }
             print(f"(Buffer) Creando una nueva tarea de almacenamiento en búfer. Handle={handle} start_offset={new_task['start_offset']}, end_offset={new_task['end_offset']}")
             self.bufferingTasks[handle].append(new_task)
 
             buffer_size = BUFFER_MB * 1024 * 1024
-            buffer_size = min(buffer_size, total_size - offset) # Prevent buffer overflow
+            buffer_size = min(buffer_size, total_size - offset)  # Evitar desbordamiento del búfer
 
-            async def worker(task_id, start_offset, end_offset):
-                current_offset = start_offset
-                while current_offset < end_offset:
-                    next_chunk_size = min(chunk_size, end_offset - current_offset, total_size - current_offset)
-                    
-                    data = await readFunc(handle, current_offset, next_chunk_size)
-
-                    self.memoryWrite(handle, current_offset, next_chunk_size, data)
-                    print(f"(Buffer) Writed (handle={handle},off={current_offset},size={next_chunk_size}, task_id={task_id})")
-                    current_offset += next_chunk_size
-
-            tasks = []
-            bytes_per_task = buffer_size // num_tasks
-            for i in range(num_tasks):
-                start_offset = offset + i * bytes_per_task
-                end_offset = start_offset + bytes_per_task
-                # Asegurarse de que el rango de trabajo no exceda el tamaño total del archivo
-                end_offset = min(end_offset, total_size)
+            current_offset = offset
+            while current_offset < new_task['end_offset']:
+                next_chunk_size = min(chunk_size, new_task['end_offset'] - current_offset, total_size - current_offset)
+                data = await readFunc(handle, current_offset, next_chunk_size)
                 
-                print(f"worker = {i}, start_offset = {start_offset}, end_offset = {end_offset}")
-                task = asyncio.create_task(worker(i, start_offset, end_offset))
-                tasks.append(task)
-
-            await asyncio.gather(*tasks)
+                self.memoryWrite(handle, current_offset, next_chunk_size, data)
+                print(f"(Buffer) Writed (handle={handle},off={current_offset},size={next_chunk_size})")
+                current_offset += next_chunk_size
 
             # Al final, eliminar esta tarea de la lista
             self.bufferingTasks[handle].remove(new_task)
@@ -264,7 +245,6 @@ class MemoryBuffer:
             print("Buffer filled.")
 
 
-        
 class FileSystemOperations(pyfuse3.Operations, FileSystemOperationsMixin):
     FsRegistryItem = RegistryItem[FileSystemItem] | RegistryRoot[FileSystemItem]
     logger = logger.getChild(f"FileSystemOperations")
@@ -673,8 +653,9 @@ class FileSystemOperations(pyfuse3.Operations, FileSystemOperationsMixin):
             self.logger.error(f"read(fh={fh}): is not file.")
             raise pyfuse3.FUSEError(errno.EIO)        
 
-        asyncio.create_task(self.memory_buffer.bufferNextBytes(fh, off, item.data.structure_item.content.read_func, item.data.structure_item.content.size, size))
-
+        
+        await self.memory_buffer.bufferNextBytes(fh, off, item.data.structure_item.content.read_func, item.data.structure_item.content.size, size)
+    
         chunk = await self.memory_buffer.memoryRead(fh, off, size, item)
         print('\033[92m' + f"(operations.py) read(handle={fh},off={off},size={size})" + '\033[0m')
         
