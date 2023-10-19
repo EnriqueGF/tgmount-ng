@@ -128,12 +128,13 @@ class MemoryBuffer:
 
         ## OPERACIONES EN EL CASO DE QUE SE SOLICITE UN OFFSET MAYOR AL TAMAÑO DEL ARCHIVO
         if off >= totalFilesize:
-            print("(Buffer) ENTRO1 OPERACIONES EN EL CASO DE QUE SE SOLICITE UN OFFSET MAYOR AL TAMAÑO DEL ARCHIVO")
-            return b''
+            print('\033[93m' + "(Buffer) ENTRO1 OPERACIONES EN EL CASO DE QUE SE SOLICITE UN OFFSET MAYOR AL TAMAÑO DEL ARCHIVO" + '\033[0m')
+            return await item.data.structure_item.content.read_func(handle, off, size);
 
         if off + size > totalFilesize:
-            return b''
-        
+            print('\033[93m' + "(Buffer) RETORNO B'' PORQUE EL OFFSET + SIZE ES MAYOR AL TAMAÑO DEL ARCHIVO" + '\033[0m')
+            return await item.data.structure_item.content.read_func(handle, off, size);
+
         attempts = 0;
       
         while not self.hasBeenWritten(handle, off, size) and attempts < 50:
@@ -144,7 +145,7 @@ class MemoryBuffer:
             await asyncio.sleep(0.03)
 
         if attempts >= 50:
-            print(f"(ATTEMPS-LIMITs) Reading directly: attempts >= 50. handle={handle}, off={off}, size={size}")
+            print('\033[94m' + f"(ATTEMPS-LIMITs) Reading directly: attempts >= 50. handle={handle}, off={off}, size={size}" + '\033[0m')
             return await item.data.structure_item.content.read_func(handle, off, size);
 
         self.bufferArray[handle].seek(off)
