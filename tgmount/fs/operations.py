@@ -113,13 +113,11 @@ class MemoryBuffer:
         self.writtenRanges = {}
         self.isBufferingList = {}
         self.bufferingTasks = {}
-        self.memoryReadAttempts = {}
     
     def storeFile(self, handle, bytes):
         self.bufferArray[handle] = mmap.mmap(-1, bytes, access=mmap.ACCESS_WRITE)
         self.writtenRanges[handle] = set()
         self.isBufferingList[handle] = False
-        self.memoryReadAttempts[handle] = 0
         
     async def memoryRead(self, handle, off, size, item):
         if handle not in self.bufferArray:
@@ -135,18 +133,18 @@ class MemoryBuffer:
 
         if off + size > totalFilesize:
             return b''
-            
+        
         attempts = 0;
-            
-        while not self.hasBeenWritten(handle, off, size) and attempts < 100:
+      
+        while not self.hasBeenWritten(handle, off, size) and attempts < 50:
             #print(f"Waiting for data to be available. handle={handle}, off={off}, size={size}")
             #print(f"Written ranges: {self.writtenRanges[handle]}")
             attempts += 1
-            print(f"SUMADO ATTEMPT, attempts {attempts} llamado desde {off} en handle {handle}")
+            #print(f"SUMADO ATTEMPT, attempts {attempts} llamado desde {off} en handle {handle}")
             await asyncio.sleep(0.03)
 
         if attempts >= 50:
-            print(f"(ATTEMPS-LIMITs) Reading directly: memoryReadAttempts >= 50. handle={handle}, off={off}, size={size}")
+            print(f"(ATTEMPS-LIMITs) Reading directly: attempts >= 50. handle={handle}, off={off}, size={size}")
             return await item.data.structure_item.content.read_func(handle, off, size);
 
         self.bufferArray[handle].seek(off)
