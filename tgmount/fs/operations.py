@@ -21,6 +21,7 @@ import mmap
 import time
 import asyncio
 import threading
+import queue
 from concurrent.futures import ThreadPoolExecutor
 
 """ 
@@ -262,6 +263,8 @@ class FileSystemOperations(pyfuse3.Operations, FileSystemOperationsMixin):
         )
         
         self.memory_buffer = MemoryBuffer()
+        self.thread_dict = {}
+        self.queue_dict = {}
         
         self._init()
 
@@ -654,8 +657,15 @@ class FileSystemOperations(pyfuse3.Operations, FileSystemOperationsMixin):
             raise pyfuse3.FUSEError(errno.EIO)        
 
         
-        await self.memory_buffer.bufferNextBytes(fh, off, item.data.structure_item.content.read_func, item.data.structure_item.content.size, size)
-    
+        if fh not in self.thread_dict:
+            print(f"(operations.py) Creando hilo para fh={fh}")
+            loop = asyncio.get_event_loop()
+            self.queue_dict[fh] = queue.Queue()
+            self.thread_dict[fh] = threading.Thread(target=self.thread_target, args=(loop, fh))
+            self.thread_dict[fh].start()
+        
+        self.queue_dict[fh].put((off, size, item))
+        
         chunk = await self.memory_buffer.memoryRead(fh, off, size, item)
         print('\033[92m' + f"(operations.py) read(handle={fh},off={off},size={size})" + '\033[0m')
         
@@ -663,7 +673,16 @@ class FileSystemOperations(pyfuse3.Operations, FileSystemOperationsMixin):
         #chunk = b''
 
         return chunk
-
+    
+    
+    def thread_target(self, loop, fh):
+        while True:
+            off, size, item = self.queue_dict[fh].get()
+            asyncio.run_coroutine_threadsafe(
+                self.memory_buffer.bufferNextBytes(fh, off, item.data.structure_item.content.read_func, item.data.structure_item.content.size, size), 
+                loop
+            )
+            
     @exception_handler
     async def release(self, fh):
         self.logger.debug(f"= release({fh})")
