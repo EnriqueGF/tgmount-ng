@@ -22,7 +22,7 @@ import time
 import asyncio
 import threading
 import queue
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
 
 """ 
 TODO
@@ -191,23 +191,22 @@ class MemoryBuffer:
         return False
     
     async def bufferNextBytes(self, handle, offset, readFunc, total_size, readSize):
+        print(f"Llamado a bufferNextBytes, arguments (handle={handle}, offset={offset}, readFunc={readFunc}, total_size={total_size}, readSize={readSize})")
+
         if handle not in self.bufferArray:
             print("(Buffer) Error: handle not found")
-            return
-        
+            return False
+
         if handle not in self.bufferingTasks:
             self.bufferingTasks[handle] = []
 
-        # Verificar si ya hay una o más tareas que cubran este rango completo
         target_start = offset
-        target_end = offset + readSize  # Ahora usamos readSize para determinar el final del rango
+        target_end = offset + readSize
 
         is_covered = False
 
-        # Ordenar las tareas por 'start_offset' para facilitar la verificación
         sorted_tasks = sorted(self.bufferingTasks[handle], key=lambda x: x['start_offset'])
 
-        # Verificar si el rango objetivo está completamente cubierto por una o más tareas
         for task in sorted_tasks:
             if task['start_offset'] <= target_start and task['end_offset'] >= target_start:
                 target_start = task['end_offset']
@@ -217,34 +216,45 @@ class MemoryBuffer:
                 break
 
         if not is_covered:
-            # Crear una nueva tarea de almacenamiento en búfer
             BUFFER_MB = 50
-            chunk_size = 1500000
+            chunk_size = 3000000  # 1.5MB
+            num_tasks = 2;
 
             new_task = {
                 'start_offset': offset,
-                'end_offset': min(offset + BUFFER_MB * 1024 * 1024, total_size)  # 50MB o hasta el final del archivo
+                'end_offset': min(offset + BUFFER_MB * 1024 * 1024, total_size)
             }
-            print(f"(Buffer) Creando una nueva tarea de almacenamiento en búfer. Handle={handle} start_offset={new_task['start_offset']}, end_offset={new_task['end_offset']}")
+
             self.bufferingTasks[handle].append(new_task)
 
-            buffer_size = BUFFER_MB * 1024 * 1024
-            buffer_size = min(buffer_size, total_size - offset)  # Evitar desbordamiento del búfer
+            async def read_and_write_sub_chunk(start, end):
+                nonlocal handle, readFunc
+                data = await readFunc(handle, start, end - start)
+                self.memoryWrite(handle, start, end - start, data)
+                print(f"(Buffer) Writed (handle={handle}, off={start}, size={end - start})")
 
             current_offset = offset
             while current_offset < new_task['end_offset']:
                 next_chunk_size = min(chunk_size, new_task['end_offset'] - current_offset, total_size - current_offset)
-                data = await readFunc(handle, current_offset, next_chunk_size)
                 
-                self.memoryWrite(handle, current_offset, next_chunk_size, data)
-                print(f"(Buffer) Writed (handle={handle},off={current_offset},size={next_chunk_size})")
+                # Dividir el tamaño del chunk entre el número de tareas
+                sub_chunk_size = next_chunk_size // num_tasks
+
+                # Crear y lanzar las tareas
+                tasks = [
+                    read_and_write_sub_chunk(current_offset + i * sub_chunk_size, current_offset + (i + 1) * sub_chunk_size)
+                    for i in range(num_tasks)
+                ]
+                
+                # Esperar a que todas las tareas se completen antes de continuar
+                await asyncio.gather(*tasks)
+
                 current_offset += next_chunk_size
 
-            # Al final, eliminar esta tarea de la lista
             self.bufferingTasks[handle].remove(new_task)
 
             print("Buffer filled.")
-
+            return True
 
 class FileSystemOperations(pyfuse3.Operations, FileSystemOperationsMixin):
     FsRegistryItem = RegistryItem[FileSystemItem] | RegistryRoot[FileSystemItem]
@@ -656,7 +666,6 @@ class FileSystemOperations(pyfuse3.Operations, FileSystemOperationsMixin):
             self.logger.error(f"read(fh={fh}): is not file.")
             raise pyfuse3.FUSEError(errno.EIO)        
 
-        
         if fh not in self.thread_dict:
             print(f"(operations.py) Creando hilo para fh={fh}")
             loop = asyncio.get_event_loop()
@@ -667,21 +676,34 @@ class FileSystemOperations(pyfuse3.Operations, FileSystemOperationsMixin):
         self.queue_dict[fh].put((off, size, item))
         
         chunk = await self.memory_buffer.memoryRead(fh, off, size, item)
-        print('\033[92m' + f"(operations.py) read(handle={fh},off={off},size={size})" + '\033[0m')
+        #print('\033[92m' + f"(operations.py) read(handle={fh},off={off},size={size})" + '\033[0m')
         
         # output empty chunk
         #chunk = b''
 
         return chunk
     
-    
     def thread_target(self, loop, fh):
-        while True:
-            off, size, item = self.queue_dict[fh].get()
-            asyncio.run_coroutine_threadsafe(
-                self.memory_buffer.bufferNextBytes(fh, off, item.data.structure_item.content.read_func, item.data.structure_item.content.size, size), 
-                loop
-            )
+        off, size, item = self.queue_dict[fh].get()
+        
+        future = asyncio.run_coroutine_threadsafe(
+            self.memory_buffer.bufferNextBytes(fh, off, item.data.structure_item.content.read_func, item.data.structure_item.content.size, size), 
+            loop
+        )
+        
+        try:
+            completed = future.result(timeout=1000)
+            if completed:
+                print(f"(thread_target) La tarea de buffering se ha completado fh = {fh}")
+            else:
+                print(f"(thread_target) La tarea de buffering no se ha completado fh = {fh}")
+        except TimeoutError:
+            print(f"(thread_target) La tarea de buffering ha excedido el tiempo de espera fh = {fh}")
+            
+        del self.thread_dict[fh]
+        del self.queue_dict[fh]
+        print(f"(thread_target) Hilo terminado fh = {fh}")
+
             
     @exception_handler
     async def release(self, fh):
