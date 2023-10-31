@@ -1,4 +1,8 @@
 import logging
+import subprocess
+import threading
+import asyncio
+
 from typing import Any, TypeGuard, TypeVar
 
 from telethon.errors import FileReferenceExpiredError, FileReferenceInvalidError
@@ -66,21 +70,72 @@ class TelegramFilesSource:
 
         raise ValueError(f"Message {message} is not downloadable")
 
-    def file_content(self, message: MessageDownloadable) -> vfs.FileContent:
-
+    subprocess_dict = {}
+    is_busy = False
+    
+    def file_content(self, message):
         item = self.get_filesource_item(message)
+        
+        def getChunk(off, size):
+            while self.is_busy:
+                pass
+        
+            self.is_busy = True
+            
+            try:
+                chunk_info = f"{message.id} {off} {size}\n"
+                print(f"Solicitado a download_file_sp: {chunk_info}")
+                self.subprocess_dict[message.id].stdin.write(chunk_info.encode())
+                self.subprocess_dict[message.id].stdin.flush()
 
-        async def read_func(handle: Any, off: int, size: int) -> bytes:
-            return await self.read(message, off, size)
+                received_data = b""
+                remaining_size = size
+
+                while remaining_size > 0:
+                    chunk = self.subprocess_dict[message.id].stdout.read(min(remaining_size, 10000000))
+                    print(f"Lectura de {len(chunk)} bytes en off {off} y size {size}")
+                                        
+                    received_data += chunk
+                    remaining_size -= len(chunk)
+                
+                return received_data
+            finally:
+                self.is_busy = False
+
+        async def read_func(handle, off, size):
+            
+            response = None
+            print(f"Offset solicitado: {off}, size solicitado: {size}")
+
+            if message.id not in self.subprocess_dict:
+                print(f"Starting subprocess for message {message.id}")
+                self.subprocess_dict[message.id] = subprocess.Popen(
+                    ["python", "download_file_sp.py"],
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    bufsize=0,
+                )
+
+            response = getChunk(off, size)
+            print(f"Offset solicitado: {off}, size solicitado: {size}, received: {len(response)}")
+        
+            #""" 
+            if (off == 720896):
+                print("PRINTEO 1\n\n\n")
+                print(response)
+                #print("PRINTEO 2\n\n\n")
+                #print(await self.read(message, off, size))
+                quit()
+            #"""
+            
+            return response
 
         fc = vfs.FileContent(size=item.size, read_func=read_func)
-
         return fc
-
+    
     async def read(
         self, message: MessageDownloadable, offset: int, limit: int
     ) -> bytes:
-
         return await self._message_read(message, offset, limit)
 
     async def _get_item_input_location(self, item: FileSourceItem) -> InputLocation:
@@ -101,7 +156,6 @@ class TelegramFilesSource:
     async def _refetch_message_file_reference(
         self, old_message: MessageDownloadable
     ) -> InputLocation:
-
         item = self.get_filesource_item(old_message)
 
         refetched_msg: MessageProto
@@ -135,7 +189,6 @@ class TelegramFilesSource:
         *,
         request_size=BLOCK_SIZE,
     ) -> bytes:
-
         # XXX adjust request_size
         ranges = split_range(offset, limit, request_size)
         result = bytes()
