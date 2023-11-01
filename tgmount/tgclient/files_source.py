@@ -75,37 +75,54 @@ class TelegramFilesSource:
     
     def file_content(self, message):
         item = self.get_filesource_item(message)
+        itemSize = item.size
         
-        def getChunk(off, size):
+        def getChunk(off, size):  # itemSize se pasa como un argumento adicional
             while self.is_busy:
+                print("getChunk bussy")
                 pass
-        
+
             self.is_busy = True
-            
+
             try:
-                chunk_info = f"{message.id} {off} {size}\n"
-                print(f"Solicitado a download_file_sp: {chunk_info}")
+                # Calcula la cantidad real de bytes a leer,
+                # teniendo en cuenta el tamaño total del archivo (itemSize)
+                real_size = min(itemSize - off, size)
+                
+                if real_size <= 0:
+                    print("(getChunk) Solicitado leer fuera de los límites del archivo.")
+                    return b""
+
+                chunk_info = f"{message.id} {off} {real_size}\n"
+                print(f"(getChunk) Solicitado: {chunk_info}")
                 self.subprocess_dict[message.id].stdin.write(chunk_info.encode())
                 self.subprocess_dict[message.id].stdin.flush()
 
                 received_data = b""
-                remaining_size = size
+                remaining_size = real_size  # Usa real_size en lugar de size
 
                 while remaining_size > 0:
                     chunk = self.subprocess_dict[message.id].stdout.read(min(remaining_size, 10000000))
-                    print(f"Lectura de {len(chunk)} bytes en off {off} y size {size}")
-                                        
+                    print(f"Lectura de {len(chunk)} bytes en off {off} y size {real_size}")  # Usa real_size en lugar de size
+                    
+                    if len(chunk) == 0:
+                        print("No se pueden leer más datos. Saliendo del bucle.")
+                        break
+                        
                     received_data += chunk
                     remaining_size -= len(chunk)
-                
+
                 return received_data
             finally:
                 self.is_busy = False
 
         async def read_func(handle, off, size):
-            
+            while self.is_busy:
+                print("read_func bussy")
+                pass
+                        
             response = None
-            print(f"Offset solicitado: {off}, size solicitado: {size}")
+            print(f"(read_func) Offset solicitado: {off}, size solicitado: {size}")
 
             if message.id not in self.subprocess_dict:
                 print(f"Starting subprocess for message {message.id}")
@@ -117,16 +134,16 @@ class TelegramFilesSource:
                 )
 
             response = getChunk(off, size)
-            print(f"Offset solicitado: {off}, size solicitado: {size}, received: {len(response)}")
+            print(f"(read_func) Retornando lectura: {off}, size solicitado: {size}, received: {len(response)}")
         
-            #""" 
-            if (off == 720896):
+            """ 
+            if (off == 2046861312):
                 print("PRINTEO 1\n\n\n")
                 print(response)
-                #print("PRINTEO 2\n\n\n")
-                #print(await self.read(message, off, size))
+                print("PRINTEO 2\n\n\n")
+                print(await self.read(message, off, size))
                 quit()
-            #"""
+            """
             
             return response
 
